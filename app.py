@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import os
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 import plotly.express as px
 
 # ============ PDF 依赖检测 ============
@@ -25,18 +25,23 @@ st.title(LANG[lang])
 if lang == '中文' and not pdf_available:
     st.sidebar.warning('未检测到 PDF 导出库，PDF 导出功能已禁用，请在 requirements.txt 中添加 `fpdf2`')
 
-# ============ 侧边栏 ==========
+# ============ 配置参数 ============
+st.sidebar.header('⚙️ 参数设置')
+cache_days = st.sidebar.number_input('缓存天数 (天)', min_value=1, value=7)
+max_snapshots = st.sidebar.number_input('保留快照份数', min_value=1, value=10)
+drawdown_lookback = st.sidebar.number_input('回撤回溯期 (天)', min_value=1, value=30)
+
+# ============ 上传与快照管理 ============
 st.sidebar.header('📁 上传与快照管理')
 uploaded = st.sidebar.file_uploader('上传 ATAS 导出数据 (.xlsx)', type='xlsx', accept_multiple_files=True)
 market_file = st.sidebar.file_uploader('上传市场快照 CSV (Symbol,Time,MarketPrice)', type='csv')
 sent_file = st.sidebar.file_uploader('上传舆情数据 CSV (Symbol,Date,SentimentScore)', type='csv')
-max_snapshots = st.sidebar.number_input('保留最近快照份数', min_value=1, value=10)
 
 SNAP_DIR = 'snapshots'
 os.makedirs(SNAP_DIR, exist_ok=True)
 
-# ============ 数据加载 ==========
-@st.cache_data
+# ============ 数据加载 ============
+@st.cache_data(ttl=cache_days * 86400)
 def load_and_clean(files):
     dfs = []
     for f in files:
@@ -59,7 +64,7 @@ def load_and_clean(files):
 if uploaded:
     df = load_and_clean(uploaded)
 
-    # 快照管理
+    # 保存快照并清理
     now = datetime.now().strftime('%Y%m%d_%H%M%S')
     snap_file = f"atas_snapshot_{len(uploaded)}files_{now}.csv"
     df.to_csv(os.path.join(SNAP_DIR, snap_file), index=False)
@@ -68,15 +73,14 @@ if uploaded:
         for old in snaps[:-max_snapshots]:
             os.remove(os.path.join(SNAP_DIR, old))
     st.sidebar.success(f"已加载 {len(df)} 条交易，快照：{snap_file}")
-    st.sidebar.write({f.name: len(df[df['上传文件']==f.name]) for f in uploaded})
 
-    # 视图 & 风险阈值配置
+    # 视图 & 风险阈值预警设置
     view = st.sidebar.selectbox('视图分组', ['总体', '按账户', '按品种'])
     st.sidebar.header('⚠️ 风险阈值预警设置')
     max_loss = st.sidebar.number_input('单笔最大亏损阈值', value=-100.0)
     max_trades = st.sidebar.number_input('日内最大交易次数阈值', value=50)
 
-    # ====== 指标与数据准备 ======
+    # ====== 指标与表格准备 ======
     df['累计盈亏'] = df['盈亏'].cumsum()
     df['日期'] = df['时间'].dt.date
     df['小时'] = df['时间'].dt.hour
@@ -89,6 +93,7 @@ if uploaded:
     sims, n = 500, len(returns)
     final = [np.random.choice(returns, n, replace=True).cumsum()[-1] for _ in range(sims)]
     monte_df = pd.DataFrame({'Monte Carlo Final': final})
+    # 滑点
     if market_file:
         mp = pd.read_csv(market_file)
         mp['Time'] = pd.to_datetime(mp['Time'], errors='coerce')
@@ -98,12 +103,14 @@ if uploaded:
         slippage = merge[['时间', '品种', '价格', '市场价格', '滑点']]
     else:
         slippage = pd.DataFrame()
+    # 舆情
     if sent_file:
         df_sent = pd.read_csv(sent_file)
         df_sent['Date'] = pd.to_datetime(df_sent['Date'], errors='coerce').dt.date
         sentiment = df_sent
     else:
         sentiment = pd.DataFrame()
+    # 汇总指标
     total_pl = df['盈亏'].sum()
     ann_return = total_pl / max((df['时间'].max() - df['时间'].min()).days, 1) * 252
     downside_dev = df[df['盈亏'] < 0]['盈亏'].std()
@@ -112,9 +119,12 @@ if uploaded:
     sharpe = df['盈亏'].mean() / df['盈亏'].std() * np.sqrt(252)
     winrate = (df['盈亏'] > 0).mean()
     profit_factor = df[df['盈亏'] > 0]['盈亏'].mean() / (-df[df['盈亏'] < 0]['盈亏'].mean())
-    mdd = (df['累计盈亏'] - df['累计盈亏'].cummax()).min()
+    # 回撤回溯期计算
+    lookback_date = datetime.now() - timedelta(days=drawdown_lookback)
+    df_lookback = df[df['时间'] >= lookback_date]
+    mdd = (df_lookback['累计盈亏'] - df_lookback['累计盈亏'].cummax()).min()
     summary = pd.DataFrame({
-        'Metric': ['Total P&L', 'Annual Return', 'Sharpe', 'Win Rate', 'Profit Factor', 'Max Drawdown', 'VaR95', 'CVaR95', 'Downside Std'],
+        'Metric': ['Total P&L', 'Annual Return', 'Sharpe', 'Win Rate', 'Profit Factor', f'Max Drawdown ({drawdown_lookback}d)', 'VaR95', 'CVaR95', 'Downside Std'],
         'Value': [total_pl, ann_return, sharpe, winrate, profit_factor, mdd, var95, cvar95, downside_dev]
     })
 
@@ -166,7 +176,7 @@ if uploaded:
     st.metric('下行风险', f"{downside_dev:.2f}")
     st.metric('VaR95', f"{var95:.2f}")
     st.metric('CVaR95', f"{cvar95:.2f}")
-    st.metric('最大回撤', f"{mdd:.2f}")
+    st.metric(f'最大回撤 ({drawdown_lookback}天)', f"{mdd:.2f}")
 
     # ====== 导出功能 ======
     if pdf_available and st.button('📄 导出PDF报告'):
@@ -176,7 +186,7 @@ if uploaded:
             pdf.set_font('Arial', 'B', 12)
             pdf.cell(0, 10, title, ln=True)
             pdf.set_font('Arial', '', 8)
-            for i, row in df_table.head(30).iterrows():
+            for i, row in df_table.iterrows():
                 pdf.cell(0, 6, str(row.to_dict()), ln=True)
         add_table_page('Trades', df)
         add_table_page('Daily P&L', daily)
