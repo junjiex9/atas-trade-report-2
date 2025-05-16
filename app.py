@@ -25,7 +25,7 @@ st.title(LANG[lang])
 if lang == '中文' and not pdf_available:
     st.sidebar.warning('未检测到 PDF 导出库，PDF 导出功能已禁用，请在 requirements.txt 中添加 `fpdf2`')
 
-# ============ 侧边栏 ============
+# ============ 侧边栏 ==========
 st.sidebar.header('📁 上传与快照管理')
 uploaded = st.sidebar.file_uploader('上传 ATAS 导出数据 (.xlsx)', type='xlsx', accept_multiple_files=True)
 market_file = st.sidebar.file_uploader('上传市场快照 CSV (Symbol,Time,MarketPrice)', type='csv')
@@ -35,7 +35,7 @@ max_snapshots = st.sidebar.number_input('保留最近快照份数', min_value=1,
 SNAP_DIR = 'snapshots'
 os.makedirs(SNAP_DIR, exist_ok=True)
 
-# ============ 数据加载 ============
+# ============ 数据加载 ==========
 @st.cache_data
 def load_and_clean(files):
     dfs = []
@@ -58,6 +58,7 @@ def load_and_clean(files):
 # ============ 主流程 ============
 if uploaded:
     df = load_and_clean(uploaded)
+
     # 快照管理
     now = datetime.now().strftime('%Y%m%d_%H%M%S')
     snap_file = f"atas_snapshot_{len(uploaded)}files_{now}.csv"
@@ -68,17 +69,14 @@ if uploaded:
             os.remove(os.path.join(SNAP_DIR, old))
     st.sidebar.success(f"已加载 {len(df)} 条交易，快照：{snap_file}")
     st.sidebar.write({f.name: len(df[df['上传文件']==f.name]) for f in uploaded})
-    # 视图 & 风险预警
+
+    # 视图 & 风险阈值配置
     view = st.sidebar.selectbox('视图分组', ['总体', '按账户', '按品种'])
-    st.sidebar.header('⚠️ 风险阈值预警')
-    max_loss = st.sidebar.number_input('单笔最大亏损', value=-100.0)
-    max_trades = st.sidebar.number_input('日内最大交易次数', value=50)
-    today_count = df[df['时间'].dt.date == datetime.today().date()].shape[0]
-    if df['盈亏'].min() < max_loss:
-        st.warning(f"⚠️ 存在单笔盈亏低于阈值({max_loss})！")
-    if today_count > max_trades:
-        st.warning(f"⚠️ 今日交易次数超过阈值({max_trades})！")
-    # ====== 指标与表格准备 ======
+    st.sidebar.header('⚠️ 风险阈值预警设置')
+    max_loss = st.sidebar.number_input('单笔最大亏损阈值', value=-100.0)
+    max_trades = st.sidebar.number_input('日内最大交易次数阈值', value=50)
+
+    # ====== 指标与数据准备 ======
     df['累计盈亏'] = df['盈亏'].cumsum()
     df['日期'] = df['时间'].dt.date
     df['小时'] = df['时间'].dt.hour
@@ -119,7 +117,15 @@ if uploaded:
         'Metric': ['Total P&L', 'Annual Return', 'Sharpe', 'Win Rate', 'Profit Factor', 'Max Drawdown', 'VaR95', 'CVaR95', 'Downside Std'],
         'Value': [total_pl, ann_return, sharpe, winrate, profit_factor, mdd, var95, cvar95, downside_dev]
     })
-    # ====== 可视化 ======
+
+    # ====== 风险阈值预警展示 ======
+    st.subheader('⚠️ 风险阈值预警')
+    if df['盈亏'].min() < max_loss:
+        st.error(f"存在单笔盈亏低于阈值 ({max_loss}) 的记录！")
+    if df[df['时间'].dt.date == datetime.today().date()].shape[0] > max_trades:
+        st.error(f"今日交易次数超过阈值 ({max_trades}) 次！")
+
+    # ====== 可视化展示 ======
     st.subheader('📈 累计盈亏趋势')
     if view == '按账户':
         st.plotly_chart(px.line(df, x='时间', y='累计盈亏', color='账户'), use_container_width=True)
@@ -127,25 +133,31 @@ if uploaded:
         st.plotly_chart(px.line(df, x='时间', y='累计盈亏', color='品种'), use_container_width=True)
     else:
         st.plotly_chart(px.line(df, x='时间', y='累计盈亏'), use_container_width=True)
+
     st.subheader('📊 日/小时盈亏')
     st.plotly_chart(px.bar(daily, x='日期', y='盈亏', title='每日盈亏'), use_container_width=True)
     st.plotly_chart(px.bar(hourly, x='小时', y='盈亏', title='每小时平均盈亏'), use_container_width=True)
+
     st.subheader('⏳ 持仓时长分布（分钟）')
     st.plotly_chart(px.box(holding, x='账户', y='持仓时长', title='按账户持仓时长'), use_container_width=True)
     st.plotly_chart(px.box(holding, x='品种', y='持仓时长', title='按品种持仓时长'), use_container_width=True)
+
     st.subheader('🎲 Monte Carlo 模拟')
     st.plotly_chart(px.histogram(monte_df, x='Monte Carlo Final', nbins=40, title='Monte Carlo 累积盈亏'), use_container_width=True)
+
     st.subheader('🕳️ 滑点与成交率分析')
     if not slippage.empty:
         st.plotly_chart(px.histogram(slippage, x='滑点', nbins=50, title='滑点分布'), use_container_width=True)
     else:
         st.info('请上传市场快照以启用滑点分析')
+
     st.subheader('📣 社交舆情热力图')
     if not sentiment.empty:
         heat = sentiment.pivot_table(index='Symbol', columns='Date', values='SentimentScore', aggfunc='mean')
         st.plotly_chart(px.imshow(heat, aspect='auto', title='舆情热力图'), use_container_width=True)
     else:
         st.info('请上传舆情数据以启用热力图')
+
     st.subheader('📌 核心统计指标')
     st.metric('夏普比率', f"{sharpe:.2f}")
     st.metric('胜率', f"{winrate:.2%}")
@@ -155,6 +167,7 @@ if uploaded:
     st.metric('VaR95', f"{var95:.2f}")
     st.metric('CVaR95', f"{cvar95:.2f}")
     st.metric('最大回撤', f"{mdd:.2f}")
+
     # ====== 导出功能 ======
     if pdf_available and st.button('📄 导出PDF报告'):
         pdf = FPDF()
@@ -178,6 +191,7 @@ if uploaded:
         pdf_output = io.BytesIO()
         pdf.output(pdf_output)
         st.download_button('下载PDF报告', data=pdf_output.getvalue(), file_name=f'ATS_Report_{now}.pdf', mime='application/pdf')
+
     if st.button('📥 导出Excel报告'):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
