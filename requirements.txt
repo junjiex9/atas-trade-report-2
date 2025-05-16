@@ -4,3 +4,4 @@ numpy
 plotly
 openpyxl
 fpdf2
+xlsxwriter
