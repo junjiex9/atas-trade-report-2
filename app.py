@@ -58,7 +58,6 @@ def load_and_clean(files):
 # ============ 主流程 ============
 if uploaded:
     df = load_and_clean(uploaded)
-
     # 快照管理
     now = datetime.now().strftime('%Y%m%d_%H%M%S')
     snap_file = f"atas_snapshot_{len(uploaded)}files_{now}.csv"
@@ -69,7 +68,6 @@ if uploaded:
             os.remove(os.path.join(SNAP_DIR, old))
     st.sidebar.success(f"已加载 {len(df)} 条交易，快照：{snap_file}")
     st.sidebar.write({f.name: len(df[df['上传文件']==f.name]) for f in uploaded})
-
     # 视图 & 风险预警
     view = st.sidebar.selectbox('视图分组', ['总体', '按账户', '按品种'])
     st.sidebar.header('⚠️ 风险阈值预警')
@@ -80,25 +78,19 @@ if uploaded:
         st.warning(f"⚠️ 存在单笔盈亏低于阈值({max_loss})！")
     if today_count > max_trades:
         st.warning(f"⚠️ 今日交易次数超过阈值({max_trades})！")
-
     # ====== 指标与表格准备 ======
-    # 核心指标
     df['累计盈亏'] = df['盈亏'].cumsum()
     df['日期'] = df['时间'].dt.date
     df['小时'] = df['时间'].dt.hour
-    # 分组统计
     daily = df.groupby('日期')['盈亏'].sum().reset_index()
     hourly = df.groupby('小时')['盈亏'].mean().reset_index()
-    # 持仓时长
     df_sorted = df.sort_values(['账户', '品种', '时间'])
     df_sorted['持仓时长'] = df_sorted.groupby(['账户', '品种'])['时间'].diff().dt.total_seconds() / 60
     holding = df_sorted[['账户', '品种', '持仓时长']]
-    # Monte Carlo
     returns = df['盈亏'].values
     sims, n = 500, len(returns)
     final = [np.random.choice(returns, n, replace=True).cumsum()[-1] for _ in range(sims)]
     monte_df = pd.DataFrame({'Monte Carlo Final': final})
-    # 滑点分析
     if market_file:
         mp = pd.read_csv(market_file)
         mp['Time'] = pd.to_datetime(mp['Time'], errors='coerce')
@@ -108,14 +100,12 @@ if uploaded:
         slippage = merge[['时间', '品种', '价格', '市场价格', '滑点']]
     else:
         slippage = pd.DataFrame()
-    # 舆情数据
     if sent_file:
         df_sent = pd.read_csv(sent_file)
         df_sent['Date'] = pd.to_datetime(df_sent['Date'], errors='coerce').dt.date
         sentiment = df_sent
     else:
         sentiment = pd.DataFrame()
-    # 汇总指标
     total_pl = df['盈亏'].sum()
     ann_return = total_pl / max((df['时间'].max() - df['时间'].min()).days, 1) * 252
     downside_dev = df[df['盈亏'] < 0]['盈亏'].std()
@@ -129,12 +119,43 @@ if uploaded:
         'Metric': ['Total P&L', 'Annual Return', 'Sharpe', 'Win Rate', 'Profit Factor', 'Max Drawdown', 'VaR95', 'CVaR95', 'Downside Std'],
         'Value': [total_pl, ann_return, sharpe, winrate, profit_factor, mdd, var95, cvar95, downside_dev]
     })
-
-    # ====== 可视化 (省略) ======
-    # ...
-
+    # ====== 可视化 ======
+    st.subheader('📈 累计盈亏趋势')
+    if view == '按账户':
+        st.plotly_chart(px.line(df, x='时间', y='累计盈亏', color='账户'), use_container_width=True)
+    elif view == '按品种':
+        st.plotly_chart(px.line(df, x='时间', y='累计盈亏', color='品种'), use_container_width=True)
+    else:
+        st.plotly_chart(px.line(df, x='时间', y='累计盈亏'), use_container_width=True)
+    st.subheader('📊 日/小时盈亏')
+    st.plotly_chart(px.bar(daily, x='日期', y='盈亏', title='每日盈亏'), use_container_width=True)
+    st.plotly_chart(px.bar(hourly, x='小时', y='盈亏', title='每小时平均盈亏'), use_container_width=True)
+    st.subheader('⏳ 持仓时长分布（分钟）')
+    st.plotly_chart(px.box(holding, x='账户', y='持仓时长', title='按账户持仓时长'), use_container_width=True)
+    st.plotly_chart(px.box(holding, x='品种', y='持仓时长', title='按品种持仓时长'), use_container_width=True)
+    st.subheader('🎲 Monte Carlo 模拟')
+    st.plotly_chart(px.histogram(monte_df, x='Monte Carlo Final', nbins=40, title='Monte Carlo 累积盈亏'), use_container_width=True)
+    st.subheader('🕳️ 滑点与成交率分析')
+    if not slippage.empty:
+        st.plotly_chart(px.histogram(slippage, x='滑点', nbins=50, title='滑点分布'), use_container_width=True)
+    else:
+        st.info('请上传市场快照以启用滑点分析')
+    st.subheader('📣 社交舆情热力图')
+    if not sentiment.empty:
+        heat = sentiment.pivot_table(index='Symbol', columns='Date', values='SentimentScore', aggfunc='mean')
+        st.plotly_chart(px.imshow(heat, aspect='auto', title='舆情热力图'), use_container_width=True)
+    else:
+        st.info('请上传舆情数据以启用热力图')
+    st.subheader('📌 核心统计指标')
+    st.metric('夏普比率', f"{sharpe:.2f}")
+    st.metric('胜率', f"{winrate:.2%}")
+    st.metric('盈亏比', f"{profit_factor:.2f}")
+    st.metric('年化收益率', f"{ann_return:.2f}")
+    st.metric('下行风险', f"{downside_dev:.2f}")
+    st.metric('VaR95', f"{var95:.2f}")
+    st.metric('CVaR95', f"{cvar95:.2f}")
+    st.metric('最大回撤', f"{mdd:.2f}")
     # ====== 导出功能 ======
-    # PDF 导出
     if pdf_available and st.button('📄 导出PDF报告'):
         pdf = FPDF()
         def add_table_page(title, df_table):
@@ -144,7 +165,6 @@ if uploaded:
             pdf.set_font('Arial', '', 8)
             for i, row in df_table.head(30).iterrows():
                 pdf.cell(0, 6, str(row.to_dict()), ln=True)
-        # 添加各页
         add_table_page('Trades', df)
         add_table_page('Daily P&L', daily)
         add_table_page('Hourly P&L', hourly)
@@ -158,8 +178,6 @@ if uploaded:
         pdf_output = io.BytesIO()
         pdf.output(pdf_output)
         st.download_button('下载PDF报告', data=pdf_output.getvalue(), file_name=f'ATS_Report_{now}.pdf', mime='application/pdf')
-
-    # Excel 导出
     if st.button('📥 导出Excel报告'):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
