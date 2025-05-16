@@ -5,7 +5,14 @@ import os
 import io
 from datetime import datetime
 import plotly.express as px
-from fpdf import FPDF
+
+# ============ PDF 依赖检测 ============
+try:
+    from fpdf import FPDF
+    pdf_available = True
+except ImportError:
+    FPDF = None
+    pdf_available = False
 
 # ============ 页面配置 ============
 st.set_page_config(page_title="📈 ATAS 自动化交易分析报告生成器", layout="wide", initial_sidebar_state="expanded")
@@ -14,6 +21,9 @@ st.set_page_config(page_title="📈 ATAS 自动化交易分析报告生成器", 
 LANG = {'中文': '📈 ATAS 自动化交易分析报告生成器', 'English': '📈 Automated Trading Report Generator'}
 lang = st.sidebar.selectbox('语言 / Language', list(LANG.keys()))
 st.title(LANG[lang])
+
+if lang == '中文' and not pdf_available:
+    st.sidebar.warning('未检测到 PDF 导出库，PDF 导出功能已禁用，请在 requirements.txt 中添加 `fpdf2`')
 
 # ============ 侧边栏 ============
 st.sidebar.header('📁 上传与快照管理')
@@ -146,20 +156,24 @@ if uploaded:
     st.metric('最大回撤', f"{mdd:.2f}")
 
     # ====== 导出报告 ======
-    if st.button('📄 导出PDF报告'):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font('Arial', 'B', 16)
-        pdf.cell(0, 10, 'ATAS 交易分析报告', ln=True)
-        pdf.ln(10)
-        pdf.set_font('Arial', '', 12)
-        pdf.cell(0, 8, f"总盈亏: {total_pl:.2f}", ln=True)
-        pdf.cell(0, 8, f"夏普比率: {sharpe:.2f}", ln=True)
-        # 可按需添加更多文本摘要
-        pdf_output = io.BytesIO()
-        pdf.output(pdf_output)
-        st.download_button('下载PDF报告', data=pdf_output.getvalue(), file_name=f'ATS_Report_{now}.pdf', mime='application/pdf')
+    if pdf_available:
+        if st.button('📄 导出PDF报告'):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font('Arial', 'B', 16)
+            pdf.cell(0, 10, 'ATAS 交易分析报告', ln=True)
+            pdf.ln(10)
+            pdf.set_font('Arial', '', 12)
+            pdf.cell(0, 8, f"总盈亏: {total_pl:.2f}", ln=True)
+            pdf.cell(0, 8, f"夏普比率: {sharpe:.2f}", ln=True)
+            pdf_output = io.BytesIO()
+            pdf.output(pdf_output)
+            st.download_button('下载PDF报告', data=pdf_output.getvalue(), file_name=f'ATS_Report_{now}.pdf', mime='application/pdf')
+    else:
+        if lang == '中文':
+            st.info('PDF 导出功能已禁用，请安装 fpdf2')
 
+    # 导出 Excel
     if st.button('📥 导出Excel报告'):
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
